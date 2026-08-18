@@ -2,89 +2,176 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Glass Overlay</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Glass Panel — AR</title>
 <style>
-  /* THE IMPORTANT PART: no background color anywhere, so the host
-     (OBS Browser Source, an Electron transparent window, etc.) can
-     actually punch through to whatever sits underneath it. */
-  html, body {
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100%;
-    background: transparent;
-    font-family: 'Space Grotesk', sans-serif;
-    overflow: hidden;
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#0a0a12; font-family:-apple-system,'Segoe UI',sans-serif; }
+  #intro {
+    position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; color:#fff; text-align:center; padding:24px; box-sizing:border-box;
   }
-
-  /* Glass panel — the blur only does anything when there's real
-     transparency behind it (a game capture, desktop, video, etc). */
-  .glass {
-    position: absolute;
-    background: rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(16px) saturate(140%);
-    -webkit-backdrop-filter: blur(16px) saturate(140%);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    border-radius: 16px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-    color: #fff;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-  }
-
-  /* --- Example widget 1: a clock --- */
-  #clockWidget {
-    top: 24px;
-    right: 24px;
-    padding: 14px 20px;
-    text-align: right;
-  }
-  #clockTime {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 28px;
-    font-weight: 500;
-    letter-spacing: 1px;
-  }
-  #clockDate {
-    font-size: 11px;
-    opacity: 0.75;
-    margin-top: 2px;
-  }
-
-  /* --- Example widget 2: a label / caption bar --- */
-  #labelWidget {
-    bottom: 24px;
-    left: 24px;
-    padding: 10px 18px;
-    font-size: 13px;
-    letter-spacing: 0.5px;
-  }
-  #labelWidget b { font-weight: 700; }
+  #intro h1 { font-size:20px; font-weight:600; margin:0; }
+  #intro p { font-size:14px; color:#b6a9e0; max-width:340px; line-height:1.5; margin:0; }
+  #unsupported { display:none; color:#ff9d9d; font-size:13px; max-width:320px; line-height:1.5; }
+  /* ARButton styles itself inline by default — this just repositions/restyles it a bit */
+  #ar-button-wrap { margin-top:8px; }
 </style>
 </head>
 <body>
 
-  <div class="glass" id="clockWidget">
-    <div id="clockTime">--:--</div>
-    <div id="clockDate"></div>
+<div id="intro">
+  <h1>Floating Glass Panel</h1>
+  <p>Put on your headset, open this page in the Meta Quest Browser, then tap the button below. A glass panel with a live clock will appear floating in your real room.</p>
+  <div id="unsupported">
+    This browser/device doesn't report AR support. This only works in a WebXR-AR capable browser (e.g. the Meta Quest Browser on a Quest headset) — and the page needs to be served over https (or localhost), not opened as a local file.
   </div>
+  <div id="ar-button-wrap"></div>
+</div>
 
-  <div class="glass" id="labelWidget">
-    <b>● LIVE</b> — edit or delete this widget, it's just an example
-  </div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 
-  <script>
-    function tick() {
-      const d = new Date();
-      document.getElementById('clockTime').textContent =
-        d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      document.getElementById('clockDate').textContent =
-        d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+<script type="module">
+  import * as THREE from 'three';
+  import { ARButton } from 'three/addons/webxr/ARButton.js';
+
+  let renderer, scene, camera, panel, panelTexture, panelCanvas, panelCtx;
+
+  init();
+
+  async function init(){
+    // Feature-check before offering the button at all
+    if(!('xr' in navigator)){
+      document.getElementById('unsupported').style.display = 'block';
+      return;
     }
-    tick();
-    setInterval(tick, 1000);
-  </script>
+    const supported = await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
+    if(!supported){
+      document.getElementById('unsupported').style.display = 'block';
+      return;
+    }
+
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 20);
+
+    renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // The AR entry button — required by the WebXR spec to be a real user gesture
+    const arButton = ARButton.createButton(renderer, {
+      optionalFeatures: ['local-floor', 'bounded-floor']
+    });
+    document.getElementById('ar-button-wrap').appendChild(arButton);
+
+    panel = buildGlassPanel();
+    scene.add(panel);
+
+    window.addEventListener('resize', onResize);
+    renderer.xr.addEventListener('sessionstart', () => {
+      document.getElementById('intro').style.display = 'none';
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+      document.getElementById('intro').style.display = 'flex';
+    });
+
+    renderer.setAnimationLoop(render);
+  }
+
+  function buildGlassPanel(){
+    // A canvas texture gives us crisp text + a soft border without
+    // needing real-time blur/refraction, which is expensive in XR.
+    panelCanvas = document.createElement('canvas');
+    panelCanvas.width = 512; panelCanvas.height = 320;
+    panelCtx = panelCanvas.getContext('2d');
+    panelTexture = new THREE.CanvasTexture(panelCanvas);
+
+    const geometry = new THREE.PlaneGeometry(0.5, 0.3125); // matches canvas aspect ratio
+    const material = new THREE.MeshBasicMaterial({
+      map: panelTexture,
+      transparent: true,
+      side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+
+    // Placed ~1.1m in front, roughly eye height. Since AR sessions
+    // typically start with -Z as "forward from where you were standing",
+    // this is a reasonable default position for a first-launch demo.
+    mesh.position.set(0, 1.4, -1.1);
+    drawPanel('--:--:--', '');
+    return mesh;
+  }
+
+  function drawPanel(time, dateStr){
+    const c = panelCtx, w = panelCanvas.width, h = panelCanvas.height, r = 36;
+    c.clearRect(0,0,w,h);
+
+    // frosted-glass card
+    c.save();
+    c.beginPath();
+    c.moveTo(r,0); c.arcTo(w,0,w,h,r); c.arcTo(w,h,0,h,r); c.arcTo(0,h,0,0,r); c.arcTo(0,0,w,0,r);
+    c.closePath();
+    c.fillStyle = 'rgba(255,255,255,0.14)';
+    c.fill();
+    c.lineWidth = 4;
+    c.strokeStyle = 'rgba(255,255,255,0.55)';
+    c.stroke();
+    c.clip();
+
+    // subtle top-light gradient, like light catching glass
+    const grad = c.createLinearGradient(0,0,0,h);
+    grad.addColorStop(0,'rgba(255,255,255,0.18)');
+    grad.addColorStop(0.4,'rgba(255,255,255,0.02)');
+    c.fillStyle = grad;
+    c.fillRect(0,0,w,h);
+    c.restore();
+
+    // text
+    c.textAlign = 'center';
+    c.fillStyle = '#ffffff';
+    c.font = '600 72px -apple-system, Segoe UI, sans-serif';
+    c.shadowColor = 'rgba(0,0,0,0.45)';
+    c.shadowBlur = 12;
+    c.fillText(time, w/2, h/2 + 10);
+
+    c.font = '400 26px -apple-system, Segoe UI, sans-serif';
+    c.fillStyle = 'rgba(255,255,255,0.8)';
+    c.shadowBlur = 6;
+    c.fillText(dateStr, w/2, h/2 + 60);
+
+    panelTexture.needsUpdate = true;
+  }
+
+  function onResize(){
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  let lastSecond = -1;
+  function render(){
+    const now = new Date();
+    if(now.getSeconds() !== lastSecond){
+      lastSecond = now.getSeconds();
+      const time = now.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+      const dateStr = now.toLocaleDateString([], { weekday:'long', month:'short', day:'numeric' });
+      drawPanel(time, dateStr);
+    }
+    // gentle bob, so it reads as "floating" rather than pinned
+    if(panel){
+      panel.position.y = 1.4 + Math.sin(performance.now()/1000) * 0.02;
+    }
+    renderer.render(scene, camera);
+  }
+</script>
 
 </body>
 </html>
